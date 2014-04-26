@@ -36,3 +36,8 @@ Using the `mk` script.
 
 
 * * *
+
+# TODO
+
+- Configure AP SSID and PSK
+
