@@ -1,0 +1,297 @@
+#!/bin/sh
+#
+# AP utilities
+#
+harpy_home=/opt/harpy
+ap_ip="10.%d.%d"
+ap_station=1
+ap_domain=lan
+ap_data=/tmp/aprun
+ap_dev=wlan1
+if [ -f /etc/harpy/ap.conf ] ; then
+  . /etc/harpy/ap.conf
+else
+  ap_ssid="ssid$RANDOM"
+  ap_psk="$RANDOM$RANDOM$RANDOM$RANDOM"
+fi
+
+init() {
+  echo "Initialising AP functionality"
+  # activate IP routing
+  sysctl -w net.ipv4.ip_forward=1
+  sysctl -w net.ipv6.conf.default.forwarding=1
+  sysctl -w net.ipv6.conf.all.forwarding=1
+  # enable NAT
+  iptables -A FORWARD -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  for inet in eth0 wlan0
+  do
+    iptables -t nat -A POSTROUTING -o $inet -j MASQUERADE
+    iptables -A FORWARD -i wlan1 -o $inet -j ACCEPT
+  done
+}
+
+mk_hostapd_cfg() {
+  local opts="dev ssid driver channel hw_mode wpa psk"
+  local hw_mode=g wpa=3 psk=none driver=rtl871xdrv
+
+  local i= j= v=
+  while [ $# -gt 0 ]
+  do
+    [ x$(expr substr "$1" 1 2) != x-- ] && break
+    j="$1" ; shift
+    for i in $opts
+    do
+      [ x$(expr substr "$j" 1 $(expr $(expr length "$i") + 3)) != x"--${i}=" ] \
+	  && continue
+      v=$(expr substr "$j" $(expr $(expr length "$i") + 4) $(expr length "$j"))
+      eval local $i=\$v
+      break
+    done
+  done
+
+  local cfg="$1" ; shift
+
+  if [ $# -gt 0 ] ; then
+    echo "Invalid usage mkhostapd" 1>&2
+    return 1
+  fi
+  for i in $opts
+  do
+    eval v=\$$i
+    if [ -z "$v" ] ; then
+      echo "Missing $i" 1>&2
+      return 1
+    fi
+  done
+
+  cat >$cfg <<-EOF
+	# Automaticlaly generated configuration
+	interface=$dev
+	driver=$driver
+	ssid=$ssid
+	channel=$channel
+	hw_mode=$hw_mode
+	$(
+	  if [ $wpa != none ] ; then
+	   echo wpa=$wpa
+	   echo wpa_passphrase=$psk
+	   echo wpa_key_mgmt=WPA-PSK
+	   echo wpa_pairwise=TKIP
+	   echo rsn_pairwise=CCMP
+	  fi
+	)
+	EOF
+}
+
+service() {
+  local chan=$(auto_channel $ap_dev)
+  [ -z "$chan" ] && exit 1
+  local cfgfile=/tmp/hostapd.conf
+
+  mk_hostapd_cfg \
+      --dev=$ap_dev \
+      --ssid=$ap_ssid \
+      --psk=$ap_psk \
+      --channel=$chan \
+      $cfgfile
+
+  exec $harpy_home/daemon /usr/sbin/hostapd $cfgfile
+}
+
+
+auto_channel() {
+    local verbose=no
+    if [ x"$1" = x"-v" ] ; then
+      verbose=yes
+      shift
+    fi
+
+    local dev="$1"
+
+    ifconfig $dev up || exit 1
+    iwlist $dev scan | tr '=:()/' '     ' | (
+	last_chan=""
+	for chan in $(seq 1 13)
+	do
+	  eval level_$chan=0
+	done
+	while read A B C D E F G
+	do
+	  if [ x"$D" = x"Channel" ] ; then
+	    last_chan="$E"
+	  elif [ x"$A" = x"Quality" ] ; then
+	    [ -z "$last_chan" ] && continue
+	    eval c=\$level_$last_chan
+	    c=$(expr $c + $F)
+	    eval level_$last_chan=\$c
+	  fi
+	done
+	# Compute spill over noise
+	for chan in $(seq 1 13)
+	do
+	  eval b_level_$chan=\$level_$chan
+	done
+	for chan in $(seq 1 13)
+	do
+	  if [ $chan -gt 1 ] ; then
+	    nchan=$(expr $chan - 1)
+	    eval noise=\$b_level_$nchan
+	    eval c=\$level_$chan
+	    c=$(expr $noise / 2 + $c)
+	    eval level_$chan=\$c
+	  fi
+	  if [ $chan -lt 13 ] ; then
+	    nchan=$(expr $chan + 1)
+	    eval noise=\$b_level_$nchan
+	    eval c=\$level_$chan
+	    c=$(expr $noise / 2 + $c)
+	    eval level_$chan=\$c
+	  fi
+	done
+
+	if [ $verbose = yes ] ;then
+	  for chan in $(seq 1 13)
+	  do
+	    eval echo $chan : \$level_$chan \$b_level_$chan
+	  done
+	fi
+
+	# Pick lowest value
+	noise=$level_1
+	channel=1
+
+	for chan in $(seq 2 13)
+	do
+	  eval cnoise=\$level_$chan
+	  if [ $cnoise -lt $noise ] ; then
+	    channel=$chan
+	    noise=$cnoise
+	  fi
+	done
+	echo $channel
+    )
+}
+
+find_ips() {
+  ip addr | tr '/' ' ' | (
+      while read a b c
+      do
+	[ x"$a" != x"inet" ] && continue
+	[ x"$b" = x"127.0.0.1" ] && continue
+	[ x"$b" = x"$1" ] && continue
+	echo $b | cut -d. -f1-3
+      done
+  )
+}
+
+check_ip() {
+  local ip="$1" i=
+  shift
+
+  for i in $*
+  do
+    [ $i = $ip ] && return 0
+  done
+  return 1
+}
+
+auto_ip() {
+  # Check the IP addresses in use and pick a suitable one...
+  local templ="$1" ; shift
+  local ip=
+
+  while [ -z "$ip" ]
+  do
+    ip=$(printf $templ $(expr $RANDOM % 256) $(expr $RANDOM % 256))
+    check_ip $ip $* && ip=
+  done
+  echo $ip
+}
+
+dns() {
+  # Check IP config
+  local subnet=
+  [ -f $ap_data.subnet ] && subnet=$(cat $ap_data.subnet)
+  local in_use=$(find_ips $subnet.$ap_station)
+  if [ -n "$subnet" ] ; then
+    # Verify existing IP...
+    check_ip $subnet $in_use && subnet=
+  fi
+  if [ -z "$subnet" ] ; then
+    echo "calculating NEW subnet"
+    subnet=$(auto_ip $ap_ip $in_use)
+    [ -z "$subnet" ] && exit
+  fi
+  echo $subnet > $ap_data.subnet
+
+  local gateway=$subnet.$ap_station myname=$(hostname)
+  ifconfig $ap_dev $gateway \
+      netmask 255.255.255.0 \
+      broadcast $subnet.255 || exit 1
+  echo $gateway $myname.$ap_domain $myname > $ap_data.myname
+
+  cfg=/tmp/dnsmasq.conf
+
+  config_dnsmasq \
+      --dev=$ap_dev \
+      --subnet=$subnet \
+      --gateway=$gateway \
+      --domain=$ap_domain \
+      $cfg
+
+  exec dnsmasq -C $cfg -k
+}
+
+
+config_dnsmasq() {
+  local opts="dev subnet domain gateway min max"
+  local min=10 max=250
+  local i= j= v=
+  while [ $# -gt 0 ]
+  do
+    [ x$(expr substr "$1" 1 2) != x-- ] && break
+    j="$1" ; shift
+    for i in $opts
+    do
+      [ x$(expr substr "$j" 1 $(expr $(expr length "$i") + 3)) != x"--${i}=" ] \
+	  && continue
+      v=$(expr substr "$j" $(expr $(expr length "$i") + 4) $(expr length "$j"))
+      eval local $i=\$v
+      break
+    done
+  done
+
+  local cfg="$1" ; shift
+
+  if [ $# -gt 0 ] ; then
+    echo "Invalid usage config dnsmasq" 1>&2
+    return 1
+  fi
+  for i in $opts
+  do
+    eval v=\$$i
+    if [ -z "$v" ] ; then
+      echo "Missing $i" 1>&2
+      return 1
+    fi
+  done
+
+  cat >$cfg <<-EOF
+	# Automaticaly generated configuration
+	interface=$dev
+	addn-hosts=$ap_data.myname
+	expand-hosts
+	domain-needed
+	bind-interfaces
+	dhcp-range=$subnet.$min,$subnet.$max,255.255.255.0,4h
+	dhcp-option=option:router,$gateway
+	dhcp-option=option:ntp-server,$gateway
+	dhcp-authoritative
+	quiet-dhcp
+	domain=$domain
+	EOF
+
+}
+
+
+"$@"

@@ -1,0 +1,21 @@
+#!/bin/sh
+#
+# Handle ifplug events...
+#
+netdev="$1"
+event="$2"
+
+[ -z "$1" ] && exit 1
+
+case "$event" in
+    up)
+	exec /sbin/ifup $netdev
+	;;
+    down)
+	exec /sbin/ifdown $netdev
+	;;
+    *)
+	echo "$netdev: unsupported event type $event"
+	exit 2
+	;;
+esac

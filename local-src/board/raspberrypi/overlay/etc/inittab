@@ -1,0 +1,56 @@
+# /etc/inittab
+#
+# Copyright (C) 2001 Erik Andersen <andersen@codepoet.org>
+#
+# Note: BusyBox init doesn't support runlevels.  The runlevels field is
+# completely ignored by BusyBox init. If you want runlevels, use
+# sysvinit.
+#
+# Format for each entry: <id>:<runlevels>:<action>:<process>
+#
+# id        == tty to run on, or empty for /dev/console
+# runlevels == ignored
+# action    == one of sysinit, respawn, askfirst, wait, and once
+# process   == program to run
+
+# Startup the system
+null::sysinit:/bin/mount -t proc proc /proc
+#null::sysinit:/bin/mount -o remount,rw / # REMOUNT_ROOTFS_RW
+null::sysinit:/bin/mkdir -p /dev/pts
+null::sysinit:/bin/mkdir -p /dev/shm
+null::sysinit:/bin/mount -a
+null::sysinit:/bin/hostname -F /etc/hostname
+# now run any rc scripts
+#::sysinit:/etc/init.d/rcS
+
+# Initialisation stuff...
+::sysinit:/opt/harpy/sshdrc
+::sysinit:/sbin/ifup -a
+::sysinit:/opt/harpy/wclirc
+::sysinit:/opt/harpy/aprun init
+
+# Services we run...
+null::respawn:/sbin/syslogd -n -D -C64
+null::respawn:/sbin/klogd -n
+null::respawn:/usr/sbin/rngd -f
+null::respawn:/usr/sbin/sshd -D
+null::respawn:/opt/harpy/daemon /usr/sbin/ifplugd -n -r /opt/harpy/ifplugd.action -i eth0
+null::respawn:/opt/harpy/daemon /usr/sbin/ifplugd -n -r /opt/harpy/ifplugd.action -i wlan0
+null::respawn:/usr/sbin/wpa_supplicant -c/etc/wpa_supplicant.conf -Dwext -iwlan0 -s -P /var/run/wpa_supplicant.pid
+null::respawn:/opt/harpy/daemon /usr/sbin/httpd -f -vv -h /opt/harpy/www -r rpi
+# Put a getty on the serial port
+null::respawn:/opt/harpy/aprun service
+null::respawn:/opt/harpy/aprun dns
+tty1::respawn:/sbin/getty -L tty1 115200 vt100
+tty2::respawn:/sbin/getty -L tty2 115200 vt100
+tty3::respawn:/sbin/getty -L tty3 115200 vt100
+tty4::respawn:/sbin/getty -L tty4 115200 vt100
+ttyAMA0::respawn:/sbin/getty -L ttyAMA0 115200 vt100
+
+# Stuff to do for the 3-finger salute
+::ctrlaltdel:/sbin/reboot
+
+# Stuff to do before rebooting
+#null::shutdown:/etc/init.d/rcK
+null::shutdown:/bin/umount -a -r
+null::shutdown:/sbin/swapoff -a

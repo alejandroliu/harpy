@@ -1,0 +1,23 @@
+#!/bin/sh
+#
+# Start-up SSHD
+#
+
+# Make sure the ssh-keygen progam exists
+[ -x /usr/bin/ssh-keygen ] || exit 1
+
+for kp in \
+    key:rsa1 rsa_key:rsa dsa_key:dsa ecdsa_key:ecdsa ed25519_key:ed25519
+do
+  fk=$(echo $kp | cut -d: -f1)
+  if [ ! -f /etc/ssh_host_$fk ] ; then
+    mount -o remount,rw /
+    echo generating $fk
+    /usr/bin/ssh-keygen \
+	-t $(echo $kp | cut -d: -f2) \
+	-f /etc/ssh_host_$fk \
+	-C '' \
+	-N ''
+    mount -o remount,ro /
+  fi
+done

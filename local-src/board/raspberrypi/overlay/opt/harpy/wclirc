@@ -1,0 +1,32 @@
+#!/bin/sh
+#
+# Initialise wifi client stuff
+#
+. /opt/harpy/lib/wifi-utils.sh
+[ ! -f $wifi_persist ] && exit
+
+echo Restoring WIFI data...
+cp -v $wifi_persist $wifi_data
+
+echo Waiting for WPA_SUPPLICANT...
+(
+  # Waiting for wpa_supplicant to run
+  while [ -z "$(pidof wpa_supplicant)" ]
+  do
+    sleep 3
+  done
+
+  # Waiting for wpa_supplicant to be ready
+  while ! wcli ping >/dev/null 2>&1
+  do
+    sleep 1
+  done
+
+  exec <$wifi_data
+  while read ssid
+  do
+    read psk
+    [ -z "$ssid" ] && continue
+    wifi_connect "$ssid" "$psk"
+  done
+)&

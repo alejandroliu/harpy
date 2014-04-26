@@ -1,0 +1,291 @@
+#!/usr/bin/haserl
+<%
+. /opt/harpy/lib/wifi-utils.sh
+. /opt/harpy/lib/cgilib.sh
+
+title="RPI WIFI Client cfg"
+toolbar="
+<table border=1>
+<tr>
+<th><a href=\"/\">Home</a></th>
+<th><a href=\"$SCRIPT_NAME/toscan\">Scan</a></th>
+<th><a href=\"$SCRIPT_NAME/status\">Status</a></th>
+<th><a href=\"$SCRIPT_NAME/showpsk\">Manage PSKs</a></th>
+</tr>
+</table>
+<br/>
+"
+
+
+net_table() {
+  echo "<table border=1>"
+  wcli scan_results | (
+    type="password"
+    [ -n "$FORM_showpw" ] && type=textfield
+
+    echo '<tr><th>'
+    read ln ; echo $ln | sed 's!/!</th><th>!g'
+    echo '</th><th>psk</th><th>Ops</th></tr>'
+    while read a b c d e
+    do
+      # Check if PSK is known...
+      old_psk=$(wifi_get_psk $wifi_data "$e")
+      ssid=$(httpd -e "$e")
+      if [ x"$a" = x"$c_bssid" ] ; then
+	echo "<form action=\"$SCRIPT_NAME/disconnect\" method=\"POST\">"
+	echo "<input type=\"hidden\" name=\"ssid\" value=\"$ssid\" />"
+	echo "<tr><td>$a</td><td>$b</td><td>$c</td><td>$d</td><td>$ssid</td>"
+	echo "<td><input type=\"$type\" name=\"psk\" value=\"$old_psk\" /></td>"
+	echo "<td>"
+	echo "<input type=\"submit\" value=\"Disconnect\" />"
+	[ -n "$old_psk" ] \
+	    && echo "<input type=\"submit\" name=\"del\" value=\"Del\" />"
+	echo "</td>"
+      else
+	echo "<form action=\"$SCRIPT_NAME/connect\" method=\"POST\">"
+	echo "<input type=\"hidden\" name=\"ssid\" value=\"$ssid\" />"
+	echo "<tr><td>$a</td><td>$b</td><td>$c</td><td>$d</td><td>$ssid</td>"
+	echo "<td><input type=\"$type\" name=\"psk\" value=\"$old_psk\" /></td>"
+	echo "<td>"
+	echo "<input type=\"submit\" value=\"Go!\" />"
+	[ -n "$old_psk" ] \
+	    && echo "<input type=\"submit\" name=\"del\" value=\"Del\" />"
+	echo "</td>"
+      fi
+      echo "</tr>"
+      echo "</form>"
+    done
+  )
+  echo "</table>"
+
+  echo "<br/>"
+  if [ -n "$FORM_showpw" ] ; then
+    echo "<table border=1><tr>"
+    echo "<th><a href=\"$SCRIPT_NAME/scan\">Hide PSKs</a></th>"
+    echo "</table>"
+  else
+    echo "<table border=1><tr>"
+    echo "<th><a href=\"$SCRIPT_NAME/scan?showpw=1\">Show PSKs</a></th>"
+    echo "</table>"
+  fi
+}
+
+cmd_scan() {
+  c_bssid=$(wcli status | grep '^bssid=' | sed 's/^bssid=//')
+
+  response \
+      --title="$title (Scan networks)" \
+      --body="$toolbar" \
+      --body="$(net_table)"
+}
+
+cmd_delete() {
+  local return="$1"
+  if [ -z "$FORM_ssid" ] ; then
+    response \
+	--title="$title (Remove)" \
+	--refresh="10; url=$SCRIPT_NAME$return" \
+	--body="$toolbar" \
+	--body="No SSID specified"
+  else
+    wifi_del_psk $wifi_data "$FORM_ssid"
+    response \
+	--title="$title (Remove PSK)" \
+	--refresh="10; url=$SCRIPT_NAME$return" \
+	--body="$toolbar" \
+	--body="PSK for $FORM_ssid removed"
+  fi
+  exit
+}
+
+cmd_connect() {
+  [ -n "$FORM_del" ] && cmd_delete "/scan"
+
+  # re-use/save psk
+  use_psk=$(wifi_get_psk $wifi_data "$FORM_ssid")
+  [ -n "$FORM_psk" ] && use_psk="$FORM_psk"
+  wifi_put_psk $wifi_data "$FORM_ssid" "$use_psk"
+
+  if local res=$(wifi_connect "$FORM_ssid" "$use_psk") ; then
+    local status=ok
+  else
+    local status=error
+  fi
+  response \
+      --title="$title (Connect $status)" \
+      --body="$toolbar" \
+      --pre="$res"
+}
+
+cmd_showpsk() {
+  table=$(
+      [ ! -f $wifi_data ] && exit
+      exec < $wifi_data
+      echo "<table border=1>"
+      echo "<tr><th>ssid</th><th>psk</th><th>ops</th></tr>"
+      while read ssid
+      do
+	read psk
+	[ -z "$ssid" ] && continue
+	echo "<tr><td>"
+	httpd -e "$ssid"
+	echo "</td><td>"
+	if [ -n "$FORM_showpw" ] ; then
+	  httpd -e "$psk"
+        else
+	  echo "********"
+	fi
+	echo "</td><td>"
+	echo "<form action=\"$SCRIPT_NAME/delpsk\" method=\"POST\">"
+	echo "<input type=\"hidden\" name=\"ssid\" value=\"$ssid\" />"
+	echo "<input type=\"submit\" value=\"Remove\" />"
+	echo "</td></tr>"
+      done
+      echo "</table>"
+  )
+
+  footer=$(
+    echo "<br/>"
+    echo "<table border=1><tr>"
+    if [ -n "$FORM_showpw" ] ; then
+      echo "<th><a href=\"$SCRIPT_NAME/showpsk\">Hide PSKs</a></th>"
+    else
+      echo "<th><a href=\"$SCRIPT_NAME/showpsk?showpw=1\">Show PSKs</a></th>"
+    fi
+    echo "<th><a href=\"$SCRIPT_NAME/savepsk\">Save PSKs</a></th>"
+    echo "</tr></table>"
+  )
+
+
+  response \
+      --title="$title (Manage PSKs)" \
+      --body="$toolbar" \
+      --body="$table" \
+      --body="$footer"
+}
+
+fmt_status() {
+  echo "<table border=1>"
+  while read x
+  do
+    echo "<tr><th align=\"right\">"
+    echo "$x" | sed 's!=!</th><td>!'
+    echo "</td></tr>"
+  done
+  echo "</table>"
+}
+
+fmt_table() {
+  echo "<table border=1>"
+  read x
+  echo "<tr><th>"
+  echo $x | sed 's!/!</th><th>!g'
+  echo "</th></tr>"
+  sed \
+      -e 's!^!<tr><td>!' \
+      -e 's!\s\s*!</td><td>!g' \
+      -e 's!$!</td></tr>!'
+  echo "</table>"
+}
+
+cmd_status() {
+  response \
+      --title="$title (Status: $(wcli ifname))" \
+      --body="$toolbar" \
+      --body="$(wcli status | fmt_status)" \
+      --body="<hr/><h2>WPA configured networks</h2>" \
+      --body="$(wcli list_networks | fmt_table)"
+}
+
+
+cmd_disconnect() {
+  [ -n "$FORM_del" ] && cmd_delete "/scan"
+
+  local ssid="$FORM_ssid"
+  if [ -z "$ssid" ] ; then
+    ssid=$(wcli status | grep '^ssid=' | sed 's/^ssid=//')
+  fi
+  if [ -z "$ssid" ] ; then
+    response \
+	--title="$title (Unknown SSID)" \
+	--body="$toolbar" \
+	--body="No known SSID connection"
+  else
+    local netid=$(wcli list_networks | awk '$2 =="'"$ssid"'" { print $1 }')
+    local id='' txt=""
+
+    for id in $netid
+    do
+      local res=$(wcli remove_network $id)
+      txt="${txt}remote_network $id: $res$lf"
+    done
+    response \
+	--title="$title (Remove network $ssid)" \
+	--body="$toolbar" \
+	--pre="$txt"
+  fi
+}
+
+cmd_savepsk() {
+  local output=$(
+      exec 2>&1
+      if cmp $wifi_data $wifi_persist ; then
+	echo "No changes need to be saved"
+      else
+	echo "Saving data..."
+	mount -o remount,rw /
+	cp -v $wifi_data $wifi_persist
+	mount -o remount,ro /
+      fi
+  )
+  response \
+      --title="$title (Saving PSKs)" \
+      --refresh="10; url=$SCRIPT_NAME/showpsk" \
+      --body="$toolbar" \
+      --pre="$output"
+}
+
+
+#
+# Dispatcher...
+#
+[ -z "$PATH_INFO" ] && PATH_INFO=/toscan
+
+case "$PATH_INFO" in
+  /toscan)
+    response \
+	--title="$title (Scanning...)" \
+	--body="Requesting scan..." \
+	--refresh="5; url=$SCRIPT_NAME/scan" \
+	--pre="$(wcli scan 2>&1)"
+    #--pre="$(strace -o /tmp/log wpa_cli -iwlan0 scan 2>&1)"
+    ;;
+  /scan)
+    cmd_scan
+    ;;
+  /connect)
+    cmd_connect
+    ;;
+  /delpsk)
+    cmd_delete "/showpsk"
+    ;;
+  /disconnect)
+    cmd_disconnect
+    ;;
+  /status)
+    cmd_status
+    ;;
+  /showpsk)
+    cmd_showpsk
+    ;;
+  /savepsk)
+    cmd_savepsk
+    ;;
+  *)
+    response \
+	--title="$title (Invalid command)" \
+	--body="$toolbar" \
+	--body="Unknown path info \"$PATH_INFO\""
+    ;;
+esac
+%>
