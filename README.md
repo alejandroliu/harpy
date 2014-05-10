@@ -19,6 +19,18 @@ Using the `mk` script.
   * linux-menuconfig : Configure kernel
   * busybox-menuconfig : Configure busybox
 
+### workflow
+
+1. `./mk prep`
+   Prepares the build environment
+2. `./mk nconfig`
+   Initialises basic configuration.
+3. `./mk`
+   Builds the whole thing
+4. `./mk sdcard sd=/dev/xxxx`
+   Installs to SD card
+5. Insert SD card into pi and run...
+
 * * *
 
 1. setup ethernet
@@ -31,7 +43,6 @@ Using the `mk` script.
 	 - iptables
    - ap_ipcfg (configs static IP and dnsmasq)
    - dnsmasq (IP!)
-   - TODO: udhcp script should kill dnsmasq (so it checks IPs again)
 4. user interface
 
 
@@ -40,4 +51,5 @@ Using the `mk` script.
 # TODO
 
 - Configure AP SSID and PSK
+- TODO: udhcp script should kill dnsmasq (so it checks IPs again)
 
